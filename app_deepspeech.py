@@ -140,7 +140,7 @@ async def session(signaling):
         await pc.close()
 
 
-def main():
+async def main():
     # ... (previous code)
 
     sound_only_page = "Sound only (sendonly)"
