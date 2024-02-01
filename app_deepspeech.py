@@ -173,10 +173,6 @@ trained on American English is being served.
     with_video_page = "With video (sendrecv)"
     app_mode = st.selectbox("Choose the app mode", [sound_only_page, with_video_page])
 
-    sound_only_page = "Sound only (sendonly)"
-    with_video_page = "With video (sendrecv)"
-    app_mode = st.selectbox("Choose the app mode", [sound_only_page, with_video_page])
-
     if app_mode == sound_only_page:
         # Use the new session function for audio-only streaming
         await session_sst_audio(
