@@ -233,6 +233,7 @@ async def session_sst_audio(model_path: str, lm_path: str, lm_alpha: float, lm_b
             break
 
 
+
 if __name__ == "__main__":
     import os
 
@@ -252,6 +253,8 @@ if __name__ == "__main__":
     fsevents_logger = logging.getLogger("fsevents")
     fsevents_logger.setLevel(logging.WARNING)
 
-    # Run the main function
-    st.title("Real-Time Speech-to-Text with Audio-Only Streaming")
-    asyncio.run(main())
+    # Create an event loop and run the main function within it
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(main())
+
