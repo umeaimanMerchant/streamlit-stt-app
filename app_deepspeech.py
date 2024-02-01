@@ -95,142 +95,85 @@ def get_ice_servers():
     return token.ice_servers
 
 
+async def session(signaling):
+    try:
+        params = await signaling.connect()
+
+        iceServers = [RTCIceServer(**server) for server in params.get('iceServers', [])]
+
+        pc = RTCPeerConnection(RTCConfiguration(iceServers=iceServers))
+
+        track = AudioStreamTrack()  # Use AudioStreamTrack for audio only
+        pc.addTrack(track)
+
+        @pc.on('datachannel')
+        def on_datachannel(channel):
+            # Forbid data channels for simplicity
+            channel.close()
+
+        await pc.setLocalDescription(await pc.createOffer())
+        await signaling.send(pc.localDescription)
+
+        # consume signaling
+        while True:
+            try:
+                obj = await signaling.receive()
+            except Close:
+                logger.info('Exiting')
+                break
+
+            logger.debug('New object from signaling: %s', obj)
+
+            if isinstance(obj, RTCSessionDescription):
+                await pc.setRemoteDescription(obj)
+
+                if obj.type == 'offer':
+                    await pc.setLocalDescription(await pc.createAnswer())
+                    await signaling.send(pc.localDescription)
+            elif isinstance(obj, RTCIceCandidate):
+                pc.addIceCandidate(obj)
+            else:
+                logger.info('Exiting')
+                break
+    finally:
+        await signaling.close()
+        await pc.close()
+
 
 def main():
-    st.header("Real Time Speech-to-Text")
-    st.markdown(
-        """
-This demo app is using [DeepSpeech](https://github.com/mozilla/DeepSpeech),
-an open speech-to-text engine.
-
-A pre-trained model released with
-[v0.9.3](https://github.com/mozilla/DeepSpeech/releases/tag/v0.9.3),
-trained on American English is being served.
-"""
-    )
-
-    # https://github.com/mozilla/DeepSpeech/releases/tag/v0.9.3
-    MODEL_URL = "https://github.com/mozilla/DeepSpeech/releases/download/v0.9.3/deepspeech-0.9.3-models.pbmm"  # noqa
-    LANG_MODEL_URL = "https://github.com/mozilla/DeepSpeech/releases/download/v0.9.3/deepspeech-0.9.3-models.scorer"  # noqa
-    MODEL_LOCAL_PATH = HERE / "models/deepspeech-0.9.3-models.pbmm"
-    LANG_MODEL_LOCAL_PATH = HERE / "models/deepspeech-0.9.3-models.scorer"
-
-    download_file(MODEL_URL, MODEL_LOCAL_PATH, expected_size=188915987)
-    download_file(LANG_MODEL_URL, LANG_MODEL_LOCAL_PATH, expected_size=953363776)
-
-    lm_alpha = 0.931289039105002
-    lm_beta = 1.1834137581510284
-    beam = 100
+    # ... (previous code)
 
     sound_only_page = "Sound only (sendonly)"
     with_video_page = "With video (sendrecv)"
     app_mode = st.selectbox("Choose the app mode", [sound_only_page, with_video_page])
 
     if app_mode == sound_only_page:
-        app_sst(
+        # Use the new session function for audio-only streaming
+        await session_sst_audio(
             str(MODEL_LOCAL_PATH), str(LANG_MODEL_LOCAL_PATH), lm_alpha, lm_beta, beam
         )
     elif app_mode == with_video_page:
+        # Use the original app_sst_with_video function for audio and video streaming
         app_sst_with_video(
             str(MODEL_LOCAL_PATH), str(LANG_MODEL_LOCAL_PATH), lm_alpha, lm_beta, beam
         )
 
 
-def app_sst(model_path: str, lm_path: str, lm_alpha: float, lm_beta: float, beam: int):
+# Create an AudioStreamTrack for audio-only streaming
+class AudioStreamTrack(MediaStreamTrack):
+    def __init__(self):
+        super().__init__()  # don't forget to call super().__init__()
+
+    async def recv(self):
+        raise MediaStreamError()
+
+# Function to run the audio-only streaming session
+async def session_sst_audio(model_path: str, lm_path: str, lm_alpha: float, lm_beta: float, beam: int):
     webrtc_ctx = webrtc_streamer(
-        key="speech-to-text",
-        mode=WebRtcMode.SENDONLY,
-        audio_receiver_size=1024,
+        key="speech-to-text-audio",
+        mode=WebRtcMode.SENDRECV,
         rtc_configuration={"iceServers": get_ice_servers()},
         media_stream_constraints={"video": False, "audio": True},
-    )
-
-    status_indicator = st.empty()
-
-    if not webrtc_ctx.state.playing:
-        return
-
-    status_indicator.write("Loading...")
-    text_output = st.empty()
-    stream = None
-
-    while True:
-        if webrtc_ctx.audio_receiver:
-            if stream is None:
-                from deepspeech import Model
-
-                model = Model(model_path)
-                model.enableExternalScorer(lm_path)
-                model.setScorerAlphaBeta(lm_alpha, lm_beta)
-                model.setBeamWidth(beam)
-
-                stream = model.createStream()
-
-                status_indicator.write("Model loaded.")
-
-            sound_chunk = pydub.AudioSegment.empty()
-            try:
-                audio_frames = webrtc_ctx.audio_receiver.get_frames(timeout=1)
-            except queue.Empty:
-                time.sleep(0.1)
-                status_indicator.write("No frame arrived.")
-                continue
-
-            status_indicator.write("Running. Say something!")
-
-            for audio_frame in audio_frames:
-                sound = pydub.AudioSegment(
-                    data=audio_frame.to_ndarray().tobytes(),
-                    sample_width=audio_frame.format.bytes,
-                    frame_rate=audio_frame.sample_rate,
-                    channels=len(audio_frame.layout.channels),
-                )
-                sound_chunk += sound
-
-            if len(sound_chunk) > 0:
-                sound_chunk = sound_chunk.set_channels(1).set_frame_rate(
-                    model.sampleRate()
-                )
-                buffer = np.array(sound_chunk.get_array_of_samples())
-                stream.feedAudioContent(buffer)
-                text = stream.intermediateDecode()
-                text_output.markdown(f"**Text:** {text}")
-        else:
-            status_indicator.write("AudioReciver is not set. Abort.")
-            break
-
-
-def app_sst_with_video(
-    model_path: str, lm_path: str, lm_alpha: float, lm_beta: float, beam: int
-):
-    frames_deque_lock = threading.Lock()
-    frames_deque: deque = deque([])
-
-    async def queued_audio_frames_callback(
-        frames: List[av.AudioFrame],
-    ) -> av.AudioFrame:
-        with frames_deque_lock:
-            frames_deque.extend(frames)
-
-        # Return empty frames to be silent.
-        new_frames = []
-        for frame in frames:
-            input_array = frame.to_ndarray()
-            new_frame = av.AudioFrame.from_ndarray(
-                np.zeros(input_array.shape, dtype=input_array.dtype),
-                layout=frame.layout.name,
-            )
-            new_frame.sample_rate = frame.sample_rate
-            new_frames.append(new_frame)
-
-        return new_frames
-
-    webrtc_ctx = webrtc_streamer(
-        key="speech-to-text-w-video",
-        mode=WebRtcMode.SENDRECV,
-        queued_audio_frames_callback=queued_audio_frames_callback,
-        rtc_configuration={"iceServers": get_ice_servers()},
-        media_stream_constraints={"video": True, "audio": True},
     )
 
     status_indicator = st.empty()
@@ -259,12 +202,9 @@ def app_sst_with_video(
             sound_chunk = pydub.AudioSegment.empty()
 
             audio_frames = []
-            with frames_deque_lock:
-                while len(frames_deque) > 0:
-                    frame = frames_deque.popleft()
-                    audio_frames.append(frame)
-
-            if len(audio_frames) == 0:
+            try:
+                audio_frames = webrtc_ctx.audio_receiver.get_frames(timeout=1)
+            except queue.Empty:
                 time.sleep(0.1)
                 status_indicator.write("No frame arrived.")
                 continue
@@ -312,4 +252,6 @@ if __name__ == "__main__":
     fsevents_logger = logging.getLogger("fsevents")
     fsevents_logger.setLevel(logging.WARNING)
 
-    main()
+    # Run the main function
+    st.title("Real-Time Speech-to-Text with Audio-Only Streaming")
+    asyncio.run(main())
