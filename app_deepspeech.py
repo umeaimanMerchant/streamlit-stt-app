@@ -1,47 +1,37 @@
 import streamlit as st
-import speech_recognition as sr
+from bokeh.models.widgets import Button
+from bokeh.models import CustomJS
+from streamlit_bokeh_events import streamlit_bokeh_events
 
-# Create a SpeechRecognition recognizer
-recognizer = sr.Recognizer()
+stt_button = Button(label="Speak", width=100)
 
-def main():
-    st.title("Real Time Speech-to-Text with Google Recognition")
+stt_button.js_on_event("button_click", CustomJS(code="""
+    var recognition = new webkitSpeechRecognition();
+    recognition.continuous = true;
+    recognition.interimResults = true;
+ 
+    recognition.onresult = function (e) {
+        var value = "";
+        for (var i = e.resultIndex; i < e.results.length; ++i) {
+            if (e.results[i].isFinal) {
+                value += e.results[i][0].transcript;
+            }
+        }
+        if ( value != "") {
+            document.dispatchEvent(new CustomEvent("GET_TEXT", {detail: value}));
+        }
+    }
+    recognition.start();
+    """))
 
-    # Start recording button
-    recording_in_progress = st.button("Start Recording")
+result = streamlit_bokeh_events(
+    stt_button,
+    events="GET_TEXT",
+    key="listen",
+    refresh_on_update=False,
+    override_height=75,
+    debounce_time=0)
 
-    # If recording is in progress, capture and save audio
-    if recording_in_progress:
-        captured_audio = capture_audio()
-        save_audio_to_file(captured_audio)
-
-        # Display the saved audio
-        st.audio(captured_audio.get_wav_data(), format='audio/wav')
-
-        # Perform speech recognition on the saved audio
-        recognized_text = recognize_audio(captured_audio)
-        st.header("Recognized Text:")
-        st.write(recognized_text)
-
-def capture_audio():
-    with sr.Microphone() as source:
-        st.info("Recording... Speak something!")
-        audio_data = recognizer.listen(source, timeout=10)
-        st.success("Recording complete!")
-    return audio_data
-
-def save_audio_to_file(audio_data, file_path="output_audio.wav"):
-    with open(file_path, "wb") as audio_file:
-        audio_file.write(audio_data.get_wav_data())
-
-def recognize_audio(audio_data):
-    try:
-        recognized_text = recognizer.recognize_google(audio_data)
-        return recognized_text
-    except sr.UnknownValueError:
-        return "Google Speech Recognition could not understand the audio"
-    except sr.RequestError as e:
-        return f"Could not request results from Google Speech Recognition service; {e}"
-
-if __name__ == "__main__":
-    main()
+if result:
+    if "GET_TEXT" in result:
+        st.write(result.get("GET_TEXT"))
