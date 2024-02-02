@@ -1,3 +1,5 @@
+bokeh
+streamlit_bokeh_events
 ffmpeg
 aiortc
 streamlit-audiorec
